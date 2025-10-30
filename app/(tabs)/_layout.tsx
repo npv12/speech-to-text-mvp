@@ -30,6 +30,20 @@ export default function TabLayout() {
           tabBarIcon: ({ color }) => <IconSymbol size={28} name="paperplane.fill" color={color} />,
         }}
       />
+      <Tabs.Screen
+        name="speech-recognition"
+        options={{
+          title: 'Voice',
+          tabBarIcon: ({ color }) => <IconSymbol size={28} name="mic.fill" color={color} />,
+        }}
+      />
+      <Tabs.Screen
+        name="advanced-speech"
+        options={{
+          title: 'Advanced',
+          tabBarIcon: ({ color }) => <IconSymbol size={28} name="settings" color={color} />,
+        }}
+      />
     </Tabs>
   );
 }
