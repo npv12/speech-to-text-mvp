@@ -1,6 +1,6 @@
 import { Colors } from '@/constants/theme';
 import { useColorScheme } from '@/hooks/use-color-scheme';
-import { CornerPathEffect, ImageFormat, Skia } from '@shopify/react-native-skia';
+import { CornerPathEffect, ImageFormat, Skia, Path as SkiaPath } from '@shopify/react-native-skia';
 import React, { useMemo, useRef, useState } from 'react';
 import { StyleSheet, Text, TouchableOpacity, View } from 'react-native';
 import FreeCanvas from 'react-native-free-canvas';
@@ -14,9 +14,15 @@ export default function DrawingScreen() {
   const [currentZoom, setCurrentZoom] = useState(1.0);
   const [strokeColor, setStrokeColor] = useState<string>(colors.tint);
   const [strokeWidth, setStrokeWidth] = useState<number>(3);
-  const [mode, setMode] = useState<'draw' | 'rect' | 'square' | 'circle'>('draw');
+  const [mode, setMode] = useState<'draw' | 'rect' | 'square' | 'circle' | 'bucket'>('draw');
   const [shapeStart, setShapeStart] = useState<{ x: number; y: number } | null>(null);
   const [shapeCurrent, setShapeCurrent] = useState<{ x: number; y: number } | null>(null);
+  const [fillColor, setFillColor] = useState<string>(colors.tint + 'AA');
+  type Shape =
+    | { key: string; kind: 'rect' | 'square'; rect: { x: number; y: number; w: number; h: number }; path: string; strokeColor: string; strokeWidth: number }
+    | { key: string; kind: 'circle'; circle: { cx: number; cy: number; r: number }; path: string; strokeColor: string; strokeWidth: number };
+  const [shapes, setShapes] = useState<Shape[]>([]);
+  const [filledColors, setFilledColors] = useState<Record<string, string>>({});
 
   // Make lines smoother
   const pathEffect = useMemo(() => <CornerPathEffect r={32} />, []);
@@ -45,6 +51,8 @@ export default function DrawingScreen() {
   const handleReset = () => {
     canvasRef.current?.reset();
     setStrokeCount(0);
+    setShapes([]);
+    setFilledColors({});
   };
 
   const handleSave = async () => {
@@ -113,15 +121,21 @@ export default function DrawingScreen() {
     }
     const svg = path.toSVGString();
     const prev = canvasRef.current?.toPaths?.() ?? [];
+    const key = `shape-${Date.now()}`;
     canvasRef.current?.drawPaths?.([
       ...prev,
-      {
-        key: `shape-${Date.now()}`,
-        strokeWidth,
-        strokeColor,
-        path: svg,
-      },
+      { key, strokeWidth, strokeColor, path: svg },
     ]);
+    if (mode === 'circle') {
+      const { x, y, w, h } = getNormalizedRect(shapeStart, shapeCurrent);
+      const r = Math.min(w, h) / 2;
+      const cx = x + Math.min(w, h) / 2 + (w > h ? (w - h) / 2 : 0);
+      const cy = y + Math.min(w, h) / 2 + (h > w ? (h - w) / 2 : 0);
+      setShapes((arr) => arr.concat([{ key, kind: 'circle', circle: { cx, cy, r }, path: svg, strokeColor, strokeWidth }]));
+    } else {
+      const { x, y, w, h } = mode === 'square' ? getSquareFromPoints(shapeStart, shapeCurrent) : getNormalizedRect(shapeStart, shapeCurrent);
+      setShapes((arr) => arr.concat([{ key, kind: 'rect', rect: { x, y, w, h }, path: svg, strokeColor, strokeWidth }]));
+    }
     setShapeStart(null);
     setShapeCurrent(null);
   };
@@ -139,6 +153,28 @@ export default function DrawingScreen() {
 
   const onShapeEnd = () => {
     commitShape();
+  };
+
+  const pointInRect = (rect: { x: number; y: number; w: number; h: number }, px: number, py: number) =>
+    px >= rect.x && px <= rect.x + rect.w && py >= rect.y && py <= rect.y + rect.h;
+
+  const pointInCircle = (circle: { cx: number; cy: number; r: number }, px: number, py: number) => {
+    const dx = px - circle.cx;
+    const dy = py - circle.cy;
+    return dx * dx + dy * dy <= circle.r * circle.r;
+  };
+
+  const onBucketGrant = (e: any) => {
+    const { locationX, locationY } = e.nativeEvent;
+    // Find topmost shape containing the point
+    for (let i = shapes.length - 1; i >= 0; i--) {
+      const s = shapes[i];
+      const hit = s.kind === 'circle' ? pointInCircle(s.circle, locationX, locationY) : pointInRect(s.rect, locationX, locationY);
+      if (hit) {
+        setFilledColors((prev) => ({ ...prev, [s.key]: fillColor }));
+        break;
+      }
+    }
   };
 
   return (
@@ -218,6 +254,7 @@ export default function DrawingScreen() {
             { key: 'rect', label: 'Rect' },
             { key: 'square', label: 'Square' },
             { key: 'circle', label: 'Circle' },
+            { key: 'bucket', label: 'Bucket' },
           ] as const).map((m) => (
             <TouchableOpacity
               key={m.key}
@@ -234,6 +271,21 @@ export default function DrawingScreen() {
             </TouchableOpacity>
           ))}
         </View>
+
+        <Text style={[styles.controlLabel, { color: colors.text, marginTop: 12 }]}>Fill color</Text>
+        <View style={styles.paletteRow}>
+          {palette.map((c) => (
+            <TouchableOpacity
+              key={`fill-${c}`}
+              onPress={() => setFillColor(c)}
+              style={[
+                styles.swatch,
+                { backgroundColor: c, borderColor: colors.tint },
+                fillColor === c && styles.swatchSelected,
+              ]}
+            />
+          ))}
+        </View>
       </View>
       
       <View style={[styles.canvasContainer, { 
@@ -244,6 +296,17 @@ export default function DrawingScreen() {
           <FreeCanvas
             ref={canvasRef}
             style={styles.canvas}
+            background={
+              Object.keys(filledColors).length > 0 ? (
+                <>
+                  {shapes
+                    .filter((s) => filledColors[s.key])
+                    .map((s) => (
+                      <SkiaPath key={`fill-${s.key}`} path={s.path} style="fill" color={filledColors[s.key]} />
+                    ))}
+                </>
+              ) : undefined
+            }
             strokeColor={strokeColor}
             strokeWidth={strokeWidth}
             backgroundColor={colorScheme === 'dark' ? '#1a1a1a' : '#ffffff'}
@@ -254,7 +317,7 @@ export default function DrawingScreen() {
             onScale={handleScale}
           />
           {/* Shape drawing overlay */}
-          {mode !== 'draw' && (
+          {mode !== 'draw' && mode !== 'bucket' && (
             <View
               pointerEvents="auto"
               style={StyleSheet.absoluteFill}
@@ -311,6 +374,14 @@ export default function DrawingScreen() {
                 )
               )}
             </View>
+          )}
+          {mode === 'bucket' && (
+            <View
+              pointerEvents="auto"
+              style={StyleSheet.absoluteFill}
+              onStartShouldSetResponder={() => true}
+              onResponderGrant={onBucketGrant}
+            />
           )}
         </View>
         <Text style={[styles.canvasLabel, { color: colors.text }]}>
